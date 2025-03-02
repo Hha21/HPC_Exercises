@@ -1,12 +1,9 @@
 #include <iostream>
-#include <cstdlib>
 #include <cmath>
-#include <random>
-#include <iomanip>
-
-using namespace std;
 
 #define F77NAME(x) x##_
+
+using namespace std;
 
 extern "C" {
     void F77NAME(dgemm) (
@@ -25,6 +22,13 @@ extern "C" {
                 const double*   x,      const int& incx,
                 const double&   beta,   double* y,
                 const int&      incy);  
+    
+    void F77NAME(dspmv) (
+                const char&     uplo,  const int& n,
+                const double& alpha,   const double* AP,    
+                const double*   x,      const int& incx,
+                const double&   beta,   double* y,
+                const int&      incy); 
 
     double F77NAME(ddot) (
                 const int&      n,
@@ -35,6 +39,55 @@ extern "C" {
                 const int&      n, 
                 const double*   x,      const int& incx);
     
+}
+
+double* createSymm(const unsigned int& N, const double& dx, const double& lambda) {
+
+    const double alpha = -2.0/(dx*dx) - lambda;
+    const double beta = 1/(dx*dx);
+
+    //reduced form
+    const int n = N - 2; //n=19
+
+    double* A = new double[(n*(n+1))/2];
+
+    for (int j = 0; j < n; ++j) {
+        for (int i = 0; i < n; ++i) {
+
+            int idx = j*(j+1) / 2 + i;
+
+            if (j == i) {
+                A[idx] = alpha;
+            }
+            else if (j - i == 1) {
+                A[idx] = beta;
+            }
+            else {
+                A[idx]= 0.0;
+
+            }
+        }
+    }
+    return A;
+}
+
+double* defineGrid (const unsigned int& N, const double& h, const double& low, const double& high) {
+
+    double* grid = new double[N];
+
+    for (size_t i = 0; i < N; ++i) {
+        grid[i] = low + i * h;
+    }
+
+    return grid;
+}
+
+void forceGrid (const unsigned int& N, const double& lambda, double* grid) {
+    const double pi = 3.14159265358979323846;
+
+    for (size_t i = 0; i < N; ++i) {
+        grid[i] = -(lambda + pi*pi)*sin(grid[i] * pi);
+    }
 }
 
 double* populateArr(const unsigned int M, const unsigned int N) {
@@ -77,14 +130,8 @@ double* conjGradient(const unsigned int n, const double* A, const double* b) {
     double* b0 = new double[n*1];
 
     //find b0 := A * x0
-    F77NAME(dgemv) ('N', n, n, alpha, A, n, x0, 1, beta, b0, 1);
+    F77NAME(dspmv) ('U', n, alpha, A, x0, 1, beta, b0, 1);
 
-    for (int i = 0; i < n; ++i) {  
-        for (int j = 0; j < n; ++j) {  
-            cout << setw(8) << fixed << setprecision(3) << A[i + j * n] << " ";
-        }
-        cout << endl;  // New line for each row
-    }
     //init r0, p0
     double* r0 = new double[n*1];
     double* p0 = new double[n*1];
@@ -101,7 +148,7 @@ double* conjGradient(const unsigned int n, const double* A, const double* b) {
         topfrac = F77NAME(ddot) (n, r0, 1, r0, 1);
 
         //compute Ap = A*p;
-        F77NAME(dgemv)('N', n, n, alpha, A, n, p0, 1, beta, Ap, 1);
+        F77NAME(dspmv)('U', n, alpha, A, p0, 1, beta, Ap, 1);
 
         //compute p^T dot Ap
         botfrac = F77NAME(ddot) (n, p0, 1, Ap, 1);
@@ -140,42 +187,42 @@ double* conjGradient(const unsigned int n, const double* A, const double* b) {
 }
 
 int main() {
+    const double a = 0.0;
+    const double b = 2.0;
+    const double lambda = 1.0;
 
-    const int n = 8;
-    const double alpha = 1.0;
-    const double beta = 0.0;
+    const double pi = 3.14159265358979323846;
 
-    double* arrM = populateArr(n, n);   // create arr M x N
-    double* vecX = populateArr(n, 1);
-    double* arrA = new double[n*n];
-    double* vecB = new double[n*1];
+    const unsigned int N = 21;
 
-    double* y = new double[n*1];
+    const double dx = (b - a) / static_cast<double>(N);
 
-    F77NAME(dgemm) ('T', 'N', n, n, n, alpha, arrM, n, arrM, n, beta, arrA, n);
+    double* A = createSymm(N, dx, lambda);
+    double* grid = defineGrid(N, dx, a, b);
 
-    for (int i = 0; i < n; ++i) {  
-        for (int j = 0; j < n; ++j) {  
-            cout << setw(8) << fixed << setprecision(3) << arrA[i + j * n] << " ";
-        }
-        cout << endl;  // New line for each row
+    forceGrid(N, lambda, grid);
+
+    double* u = new double[N];
+    u = conjGradient(N, A, grid);
+
+    //VERIFY:
+    double* analytic = defineGrid(N, dx, a, b);
+    double* diff = new double[N];
+
+    for (size_t i = 0; i < N; ++i) {
+        analytic[i] = sin(pi*analytic[i]);
+        diff[i] = analytic[i] - u[i];
+        cout << "Analytic: " << analytic[i] << " | Numerical: " << u[i] << endl;
     }
 
-    //compute b = Ax;
+    double epsilon = F77NAME(dnrm2)(N, diff, 1);
 
-    F77NAME(dgemv) ('N', n, n, alpha, arrA, n, vecX, 1, beta, vecB, 1);
+    cout << "EPSILON: " << epsilon << endl;
 
-    //given b = Ax, should solve for y = x.
-    y = conjGradient(n, arrA, vecB);
-
-    for (int i = 0; i < n; ++i) {
-        cout << "y[" << i << "] is: " << y[i] << " | x[" << i << "] is: " << vecX[i] << endl;
-    }
-
-    delete[] arrM;
-    delete[] vecX;
-    delete[] arrA;
-    delete[] vecB;
-    delete[] y;
+    
+    delete[] A;
+    delete[] u;
+    delete[] diff;
+    delete[] analytic;
     return 0;
-}
+};
